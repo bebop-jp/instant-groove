@@ -686,23 +686,23 @@ footer{ border-top: none !important; }
 }
 
 
-  /* ===== Background canvas: bebop / motion particle text ===== */
-  #bgBebopMotion{
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100vh;
-    z-index: 0;
-    pointer-events: none;
-    opacity: 1;
+  /* --- background motion layer --- */
+  #bgfx{
+    position:fixed;
+    inset:0;
+    width:100vw;
+    height:100vh;
+    z-index:0;
+    pointer-events:none;
+    display:block;
+    background:#0b0b0f;
   }
-  /* Keep UI above background canvas */
-  header.ig-nav{ z-index: 80; }
-  .wrap{ position: relative; z-index: 1; }
-  /* (main/footer inherit normal stacking) */
+  .wrap{ position:relative; z-index:1; }
+
 </style>
 </head>
 <body>
+<canvas id="bgfx" aria-hidden="true"></canvas>
 
   
   
@@ -867,7 +867,7 @@ motion</textarea>
       </select>
     </label>
 
-    <button id="dlBtn" disabled>⬇ DOWNLOAD （.webm）</button>
+    <button id="dlBtn" disabled>⬇ DOWNLOAD (.webm)</button>
     <span id="countdown" class="countdown" aria-live="polite"></span>
 </div>
 <div class="hint">
@@ -887,6 +887,11 @@ motion</textarea>
       A few seconds of magic, designed for the now.<br>
       Your time, captured with ease.<br><br>
       <span class="mono">bebop</span>
+      <div style="margin-top:18px; padding-top:14px; border-top:1px solid rgba(255,255,255,.18); color:rgba(255,255,255,.78); line-height:1.75;">
+        <p>未完成であることについてのご案内</p>
+<p>本サイトでは現在、訪れるたびに新しい発見があるよう、いくつかのユニークなギミックや演出を順次実装しております。</p>
+<p>誠に勝手ながら、細部の挙動につきましては現在もブラッシュアップを重ねている調整段階にございます。一部お見苦しい点や不安定な箇所があるかと存じますが、完成に至るまでの制作プロセスそのものも一つの表現として、現時点で公開している範囲にてお楽しみいただけますと幸いです。</p>
+      </div>
     </div>
   </div>
 
@@ -2406,208 +2411,169 @@ function closeModal(){
 
   <script src="https://unpkg.com/ts-ebml@3.0.4/dist/EBML.js"></script>
 
-<footer>
-  <div class="footer-inner">
-    <p>未完成であることについてのご案内</p>
-<p>本サイトでは現在、訪れるたびに新しい発見があるよう、いくつかのユニークなギミックや演出を順次実装しております。</p>
-<p>誠に勝手ながら、細部の挙動につきましては現在もブラッシュアップを重ねている調整段階にございます。一部お見苦しい点や不安定な箇所があるかと存じますが、完成に至るまでの制作プロセスそのものも一つの表現として、現時点で公開している範囲にてお楽しみいただけますと幸いです。</p>
-  </div>
-</footer>
 
 <script>
-/* Background: "bebop\nmotion" particles on black background
-   Loop: gather(text) -> hold -> scatter -> hold -> gather ...
-   Does not touch existing app code. */
-(function(){
-  const CANVAS_ID = "bgBebopMotion";
-  const TEXT = "bebop\nmotion";
-  const COLOR = "rgba(230,230,230,0.22)"; // visible on black but still background-y
-  const HOLD_MS = 900;   // pause when gathered / scattered
-  const PHASE_MS = 1400; // travel time between states
-  const MAX_PTS = 4200;  // cap for performance
-
-  function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
-  function now(){ return performance.now(); }
-
-  function makeCanvas(){
-    let c = document.getElementById(CANVAS_ID);
-    if(!c){
-      c = document.createElement("canvas");
-      c.id = CANVAS_ID;
-      document.body.prepend(c);
-    }
-    return c;
-  }
-
-  const canvas = makeCanvas();
+/* ==============================
+   Background "bebop / motion" particles
+   - DOT_SIZE controls particle size
+   - TEXT_COVER controls how much of the screen the text fills (0.9 = almost edge to edge)
+   ============================== */
+(() => {
+  const canvas = document.getElementById("bgfx");
   const ctx = canvas.getContext("2d", { alpha: true });
+
+  const TEXT_LINES = ["bebop", "motion"];
+  const TEXT_COVER = 0.94;   // 0.90〜0.98 推奨（文字を画面ギリギリに）
+  const DOT_SIZE = 24;       // ← 粒子サイズ（20倍くらいの目安）
+  const DOT_STEP = 10;       // ← 粒子密度（小さいほど粒が多い）
+  const HOLD_SEC = 0.35;     // 集合後の静止時間
+  const CYCLE_SEC = 3.2;     // 拡散→集合→静止→拡散… 全体の周期
+
+  let W=0, H=0, DPR=1;
+  let targets = [];   // [{x,y}]
+  let particles = []; // [{x,y,bx,by,phase,spd}]
+
   const off = document.createElement("canvas");
   const offCtx = off.getContext("2d");
 
-  let dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-  let W=0,H=0;
-  let pts = [];
-  let targetsA = []; // gathered (text)
-  let targetsB = []; // scattered (full screen)
-  let phase = "holdA"; // holdA -> toB -> holdB -> toA
-  let phaseStart = now();
+  function fitFontSize(pxW, pxH){
+    // 初期値は大きめ → 測って縮める
+    let fontSize = Math.max(60, Math.floor(Math.min(pxW, pxH) * 0.35));
+    const family = 'ui-sans-serif, system-ui, -apple-system, "Hiragino Sans","Noto Sans JP", sans-serif';
 
-  function resize(){
-    dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-    W = Math.floor(window.innerWidth);
-    H = Math.floor(window.innerHeight);
-    canvas.width = Math.floor(W * dpr);
-    canvas.height = Math.floor(H * dpr);
-    canvas.style.width = W + "px";
-    canvas.style.height = H + "px";
-    ctx.setTransform(dpr,0,0,dpr,0,0);
+    for(let i=0;i<24;i++){
+      offCtx.font = `900 ${fontSize}px ${family}`;
+      const widths = TEXT_LINES.map(t => offCtx.measureText(t).width);
+      const maxW = Math.max(...widths);
+      const lineH = fontSize * 1.0;
+      const totalH = lineH * TEXT_LINES.length;
 
-    // Rebuild targets from text mask
-    buildTargets();
-    // Reset particles on gather positions (so first frame is visible)
-    initParticlesFromTargets();
-    phase = "holdA";
-    phaseStart = now();
+      const scale = TEXT_COVER * Math.min(pxW / (maxW || 1), pxH / (totalH || 1));
+      const next = Math.floor(fontSize * scale);
+
+      if (Math.abs(next - fontSize) <= 2) return Math.max(10, next);
+      fontSize = Math.max(10, next);
+    }
+    return Math.max(10, fontSize);
   }
 
-  function buildTargets(){
-    // render text on offscreen at device pixels for sampling
-    off.width = Math.floor(W * dpr);
-    off.height = Math.floor(H * dpr);
-    offCtx.setTransform(dpr,0,0,dpr,0,0);
-    offCtx.clearRect(0,0,W,H);
+  function rebuildTargets(){
+    targets = [];
+    off.width = W;
+    off.height = H;
 
-    // Determine big font size so it feels "screen-filling"
-    const minDim = Math.min(W,H);
-    const fontSize = clamp(minDim * 0.22, 86, 220); // responsive
-    offCtx.fillStyle = "#fff";
+    offCtx.clearRect(0,0,W,H);
+    offCtx.fillStyle = "#000";
+    offCtx.fillRect(0,0,W,H);
+
+    const fontSize = fitFontSize(W, H);
+    const family = 'ui-sans-serif, system-ui, -apple-system, "Hiragino Sans","Noto Sans JP", sans-serif';
+    offCtx.font = `900 ${fontSize}px ${family}`;
     offCtx.textAlign = "center";
     offCtx.textBaseline = "middle";
-    offCtx.font = `900 ${fontSize}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif`;
-    offCtx.letterSpacing = "0.04em";
+    offCtx.fillStyle = "#fff";
 
-    const lines = TEXT.split("\n");
-    const lineGap = fontSize * 1.05;
-    const totalH = (lines.length-1)*lineGap;
-    const cx = W/2;
-    const cy = H*0.44; // slightly upper
-    lines.forEach((ln,i)=>{
-      offCtx.fillText(ln, cx, cy + (i*lineGap - totalH/2));
+    const lineH = fontSize * 1.0;
+    const y0 = H/2 - (lineH*(TEXT_LINES.length-1))/2;
+
+    for(let i=0;i<TEXT_LINES.length;i++){
+      offCtx.fillText(TEXT_LINES[i], W/2, y0 + i*lineH);
+    }
+
+    const img = offCtx.getImageData(0,0,W,H).data;
+    for(let y=0;y<H;y+=DOT_STEP){
+      for(let x=0;x<W;x+=DOT_STEP){
+        const a = img[(y*W + x)*4 + 3];
+        if (a > 10) targets.push({x, y});
+      }
+    }
+  }
+
+  function initParticles(){
+    particles = targets.map((t, i) => {
+      // 拡散用のベース位置（ランダム）
+      const bx = Math.random() * W;
+      const by = Math.random() * H;
+      return {
+        x: bx, y: by,
+        bx, by,
+        tx: t.x, ty: t.y,
+        phase: Math.random() * Math.PI * 2,
+        spd: 0.6 + Math.random()*0.8
+      };
     });
-
-    // Sample pixels
-    const img = offCtx.getImageData(0,0,off.width,off.height).data;
-    const step = Math.max(3, Math.floor((minDim / 420) * dpr)); // density scales with viewport
-    const out = [];
-    for(let y=0; y<off.height; y+=step){
-      for(let x=0; x<off.width; x+=step){
-        const a = img[(y*off.width + x)*4 + 3];
-        if(a > 30){
-          // convert to CSS pixels
-          out.push({ x: x/dpr, y: y/dpr });
-        }
-      }
-    }
-    // Cap points (shuffle then slice)
-    if(out.length > MAX_PTS){
-      for(let i=out.length-1;i>0;i--){
-        const j = (Math.random()*(i+1))|0;
-        const t = out[i]; out[i]=out[j]; out[j]=t;
-      }
-      out.length = MAX_PTS;
-    }
-    targetsA = out;
-
-    // scatter targets uniform across viewport (avoid edges a bit)
-    const margin = Math.min(80, minDim*0.08);
-    targetsB = targetsA.map(()=>({
-      x: margin + Math.random()*(W - margin*2),
-      y: margin + Math.random()*(H - margin*2)
-    }));
   }
 
-  function initParticlesFromTargets(){
-    pts = targetsA.map((t,i)=>({
-      x: t.x,
-      y: t.y,
-      vx: (Math.random()-0.5)*0.6,
-      vy: (Math.random()-0.5)*0.6,
-      i
-    }));
+  function resize(){
+    DPR = Math.max(1, window.devicePixelRatio || 1);
+    const cssW = Math.max(1, window.innerWidth);
+    const cssH = Math.max(1, window.innerHeight);
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+    canvas.width = Math.floor(cssW * DPR);
+    canvas.height = Math.floor(cssH * DPR);
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+
+    W = cssW;
+    H = cssH;
+
+    rebuildTargets();
+    initParticles();
+  }
+  window.addEventListener("resize", resize, { passive:true });
+  resize();
+
+  function easeInOut(t){
+    return t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2;
   }
 
-  function easeOutExpo(t){ return t===1 ? 1 : 1 - Math.pow(2, -10*t); }
-  function easeInOutCubic(t){ return t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+  let t0 = performance.now();
+  function frame(now){
+    const sec = (now - t0) / 1000;
+    const cyc = sec % CYCLE_SEC;
 
-  function setPhase(p){
-    phase = p;
-    phaseStart = now();
-  }
+    // 0..1 の進行（集合→静止→拡散を作る）
+    const gatherEnd = 0.50 * CYCLE_SEC;
+    const holdEnd   = gatherEnd + HOLD_SEC;
 
-  function draw(){
-    ctx.clearRect(0,0,W,H);
-    // a faint blur glow
-    ctx.fillStyle = COLOR;
-
-    // draw dots
-    for(let k=0; k<pts.length; k++){
-      const p = pts[k];
-      ctx.fillRect(p.x, p.y, 1.2, 1.2);
-    }
-  }
-
-  function tick(){
-    const t = now();
-    const dt = 16.7;
-
-    if(phase === "holdA"){
-      if(t - phaseStart > HOLD_MS) setPhase("toB");
-    } else if(phase === "holdB"){
-      if(t - phaseStart > HOLD_MS) setPhase("toA");
+    let k; // 0=拡散, 1=集合
+    if (cyc <= gatherEnd){
+      k = easeInOut(cyc / gatherEnd); // 集合へ
+    } else if (cyc <= holdEnd){
+      k = 1; // 静止
     } else {
-      const u = clamp((t - phaseStart) / PHASE_MS, 0, 1);
-      const e = (phase === "toB") ? easeInOutCubic(u) : easeOutExpo(u);
-      const from = (phase === "toB") ? targetsA : targetsB;
-      const to   = (phase === "toB") ? targetsB : targetsA;
-
-      for(let k=0; k<pts.length; k++){
-        const p = pts[k];
-        const a = from[p.i];
-        const b = to[p.i];
-
-        // add little individuality so it doesn't clump
-        const wob = Math.sin((t*0.002) + p.i*0.02) * 0.9;
-        const wob2 = Math.cos((t*0.0017) + p.i*0.018) * 0.9;
-
-        p.x = a.x + (b.x - a.x)*e + wob;
-        p.y = a.y + (b.y - a.y)*e + wob2;
-      }
-
-      if(u >= 1){
-        setPhase(phase === "toB" ? "holdB" : "holdA");
-      }
+      const outT = (cyc - holdEnd) / (CYCLE_SEC - holdEnd);
+      k = 1 - easeInOut(outT); // 拡散へ
     }
 
-    draw();
-    requestAnimationFrame(tick);
-  }
+    // 背景
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = "#0b0b0f";
+    ctx.fillRect(0,0,W,H);
 
-  window.addEventListener("resize", resize, { passive: true });
-  document.addEventListener("visibilitychange", ()=>{
-    // rebuild after tab switching (some browsers mess up DPR)
-    if(!document.hidden) resize();
-  });
+    // 粒子色（黒背景に対してグレー90%くらい）
+    ctx.fillStyle = "rgba(26,26,26,0.90)";
 
-  // Boot after DOM ready (but do not rely on other scripts)
-  if(document.readyState === "loading"){
-    document.addEventListener("DOMContentLoaded", ()=>{
-      resize();
-      requestAnimationFrame(tick);
-    }, { once: true });
-  } else {
-    resize();
-    requestAnimationFrame(tick);
+    const dot = DOT_SIZE;
+    const amp = Math.min(W,H) * 0.045; // 拡散揺れ
+
+    for(let i=0;i<particles.length;i++){
+      const p = particles[i];
+      const t = targets[i];
+
+      // 拡散時はランダムベース＋揺れ、集合時は文字ターゲットへ
+      const nx = p.bx + Math.cos(sec*p.spd + p.phase) * amp;
+      const ny = p.by + Math.sin(sec*p.spd + p.phase) * amp;
+
+      const x = nx*(1-k) + t.x*k;
+      const y = ny*(1-k) + t.y*k;
+
+      ctx.fillRect(x - dot*0.5, y - dot*0.5, dot, dot);
+    }
+
+    requestAnimationFrame(frame);
   }
+  requestAnimationFrame(frame);
 })();
 </script>
 
